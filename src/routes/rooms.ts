@@ -27,12 +27,12 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
         const newRoom: Room = { id: nextId++, ...request.body };
         rooms.push(newRoom);
         return reply.status(201).send(newRoom);
-    })
+    });
 
     app.delete<{ Params: { id: string } }>('/:id', async (request, reply) => {
         const room = rooms.findIndex((r) => r.id === parseInt(request.params.id));
         if (!room) return reply.status(404).send({ error: 'Room not found' });
         rooms = rooms.filter((r) => r.id !== parseInt(request.params.id));
         return reply.status(204).send({ error: 'Room deleted' });
-    }
+    })
 }
