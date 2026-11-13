@@ -5,23 +5,13 @@ import { Room, RoomBody, type RoomType } from '../schema/rooms.ts';
 import { ErrorSchema } from '../schema/errors.ts';
 import { HttpError } from '../plugins/errors.ts';
 
-let rooms: RoomType[] = [
-    { id: 1, name: 'A101', capacity: 30 },
-    { id: 2, name: 'Toto', capacity: 12 },
-];
-
-let nextId = 3;
-
-export function roomExists(id: number) {
-    return rooms.some((r) => r.id === id);
-}
-
 const RoomParams = Type.Object({
     id: Type.String({ minLength: 1, description: 'Identifiant de la salle', examples: ['1'] }),
 });
 
 export const roomsRoutes: FastifyPluginAsync = async (app) => {
     const typed = app.withTypeProvider<TypeBoxTypeProvider>();
+    const {prisma} = app
 
     typed.get('/', {
         schema: {
@@ -34,8 +24,10 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
         },
     }, async (request) => {
         const { minCapacity } = request.query;
-        if (minCapacity) return rooms.filter((r) => r.capacity >= minCapacity);
-        return rooms;
+        return prisma.room.findMany({
+            where: minCapacity ? { capacity: { gte: minCapacity } } : undefined,
+            orderBy: { name: 'asc' },
+        })
     });
 
     typed.get('/:id', {
@@ -46,9 +38,12 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
             response: { 200: Room, 404: ErrorSchema },
         },
     }, async (request) => {
-        const room = rooms.find((r) => r.id === Number(request.params.id));
-        if (!room) throw new HttpError(404, 'Room not found');
-        return room;
+        const room = await prisma.room.findUnique({
+            where:{
+                id: Number(request.params.id),
+            },
+        });
+        if (!room) throw new HttpError(404, "Salle introuvable");
     });
 
     typed.post('/', {
@@ -59,8 +54,9 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
             response: { 201: Room, 400: ErrorSchema },
         },
     }, async (request, reply) => {
-        const room: RoomType = { id: nextId++, ...request.body };
-        rooms.push(room);
+        const room = await prisma.room.create({
+            data: request.body,
+        })
         return reply.code(201).send(room);
     });
 
@@ -73,9 +69,12 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
             response: { 200: Room, 400: ErrorSchema, 404: ErrorSchema },
         },
     }, async (request) => {
-        const room = rooms.find((r) => r.id === Number(request.params.id));
-        if (!room) throw new HttpError(404, 'Room not found');
-        Object.assign(room, request.body);
+        const room = await prisma.room.update({
+            where: {
+                id: Number(request.params.id),
+            },
+            data: request.body,
+        });
         return room;
     });
 
@@ -87,9 +86,11 @@ export const roomsRoutes: FastifyPluginAsync = async (app) => {
             response: { 204: Type.Null({ description: 'Salle supprimée' }), 404: ErrorSchema },
         },
     }, async (request, reply) => {
-        const index = rooms.findIndex((r) => r.id === Number(request.params.id));
-        if (index === -1) throw new HttpError(404, 'Room not found');
-        rooms = rooms.filter((r) => r.id !== Number(request.params.id));
+        const room = await prisma.room.delete({
+            where: {
+                id: Number(request.params.id),
+            },
+        })
         return reply.code(204).send(null);
     });
 }

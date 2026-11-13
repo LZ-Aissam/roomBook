@@ -8,8 +8,9 @@
         "noEmit": true,
         "allowImportingTsExtensions": true,
         "skipDefaultLibCheck": true,
-        "outDir": "dist",
-        "rootDir": "src"
+        "types": ["node"]
+        // "outDir": "dist",
+        // "rootDir": "src"
     },
-    "include": ["src"]
+    "include": ["src", "./prisma7.config.ts"]
 }

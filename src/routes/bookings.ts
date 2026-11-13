@@ -1,29 +1,13 @@
 import type { FastifyPluginAsync } from 'fastify'
 import type { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
 import { Type } from 'typebox';
-import { Booking, BookingBody, type BookingType } from '../schema/bookings.ts';
+import { Booking, BookingBody, BookingParams, type BookingType } from '../schema/bookings.ts';
 import { ErrorSchema } from '../schema/errors.ts';
 import { HttpError } from '../plugins/errors.ts';
-import { roomExists } from './rooms.ts';
-
-let Bookings: BookingType[] = [
-    { id: 1, userId: 'toto', startsAt: '2026-01-01', endsAt: '2026-01-02', roomId: 1 },
-    { id: 2, userId: 'tata', startsAt: '2026-01-01', endsAt: '2026-01-02', roomId: 2 },
-];
-
-let nextId = 3;
-
-const BookingParams = Type.Object({
-    id: Type.String({ minLength: 1, description: 'Identifiant de la réservation', examples: ['1'] }),
-});
-
-function checkBooking(booking: Omit<BookingType, 'id'>) {
-    if (!roomExists(booking.roomId)) throw new HttpError(404, 'Room not found');
-    if (booking.endsAt <= booking.startsAt) throw new HttpError(400, 'endsAt must be after startsAt');
-}
 
 export const BookingRoutes: FastifyPluginAsync = async (app) => {
     const typed = app.withTypeProvider<TypeBoxTypeProvider>();
+    const prisma = app.prisma;
 
     typed.get('/', {
         schema: {
@@ -32,7 +16,14 @@ export const BookingRoutes: FastifyPluginAsync = async (app) => {
             response: { 200: Type.Array(Booking) },
         },
     }, async () => {
-        return Bookings;
+        return prisma.booking.findMany({
+            include: {
+                room: true,
+            },
+            orderBy: {
+                startsAt: 'asc',
+            },
+        });
     });
 
     typed.get('/:id', {
@@ -43,8 +34,12 @@ export const BookingRoutes: FastifyPluginAsync = async (app) => {
             response: { 200: Booking, 404: ErrorSchema },
         },
     }, async (request) => {
-        const booking = Bookings.find((b) => b.id === Number(request.params.id));
-        if (!booking) throw new HttpError(404, 'Booking not found');
+        const booking = await prisma.booking.findUnique({
+            where: {
+                id: Number(request.params.id),
+            },
+        });
+        if (!booking) throw new HttpError(404, 'La réservation est introuvable');
         return booking;
     });
 
@@ -56,9 +51,21 @@ export const BookingRoutes: FastifyPluginAsync = async (app) => {
             response: { 201: Booking, 400: ErrorSchema, 404: ErrorSchema },
         },
     }, async (request, reply) => {
-        checkBooking(request.body);
-        const booking: BookingType = { id: nextId++, ...request.body };
-        Bookings.push(booking);
+        const booking = await prisma.booking.create({
+            data: request.body,
+        });
+        const conflict = await prisma.booking.findFirst({
+            where: {
+                roomId: booking.roomId,
+                startsAt: {
+                    lte: booking.endsAt,
+                },
+                endsAt: {
+                    gte: booking.startsAt,
+                },
+            },
+        });
+        if (conflict) throw new HttpError(400, 'La réservation existe déjà pour cette salle et cette période');
         return reply.code(201).send(booking);
     });
 
@@ -71,11 +78,33 @@ export const BookingRoutes: FastifyPluginAsync = async (app) => {
             response: { 200: Booking, 400: ErrorSchema, 404: ErrorSchema },
         },
     }, async (request) => {
-        const booking = Bookings.find((b) => b.id === Number(request.params.id));
-        if (!booking) throw new HttpError(404, 'Booking not found');
-        checkBooking({ ...booking, ...request.body });
-        Object.assign(booking, request.body);
-        return booking;
+        return await prisma.$transaction(async (tx) => {
+            const booking = await tx.booking.findUnique({
+                where: { id: Number(request.params.id) },
+            });
+            if (!booking) throw new HttpError(404, 'La réservation est introuvable');
+            const startsAt = new Date(request.body.startsAt ?? booking.startsAt);
+            const endsAt = new Date(request.body.endsAt ?? booking.endsAt);
+            const roomId = request.body.roomId ?? booking.roomId;
+            if (endsAt <= startsAt) throw new HttpError(400, 'La date de fin doit être après la date de début');
+            const conflict = await tx.booking.findFirst({
+                where: {
+                    roomId,
+                    id: { not: booking.id },
+                    startsAt: { lte: endsAt },
+                    endsAt: { gte: startsAt },
+                },
+            });
+            if (conflict) throw new HttpError(400, 'La réservation existe déjà pour cette salle et cette période');
+            return await tx.booking.update({
+                where: { id: booking.id },
+                data: {
+                    startsAt,
+                    endsAt,
+                    roomId,
+                },
+            });
+        });
     });
 
     typed.delete('/:id', {
@@ -83,12 +112,15 @@ export const BookingRoutes: FastifyPluginAsync = async (app) => {
             tags: ['bookings'],
             summary: 'Supprimer une réservation',
             params: BookingParams,
-            response: { 204: Type.Null({ description: 'Réservation supprimée' }), 404: ErrorSchema },
+            response: { 204: Booking, 404: ErrorSchema },
         },
     }, async (request, reply) => {
-        const booking = Bookings.find((b) => b.id === Number(request.params.id));
-        if (!booking) throw new HttpError(404, 'Booking not found');
-        Bookings = Bookings.filter((b) => b.id !== Number(request.params.id));
-        return reply.code(204).send(null);
+        const booking = await prisma.booking.delete({
+            where: {
+                id: Number(request.params.id),
+            },
+        });
+        if (!booking) throw new HttpError(404, 'La réservation est introuvable');
+        return reply.code(204).send(booking);
     });
 }
